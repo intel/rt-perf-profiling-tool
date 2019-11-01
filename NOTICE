@@ -1,0 +1,25 @@
+This project includes software developed from 3rd-party vendors:
+
+Nmonchart
+http://nmon.sourceforge.net/pmwiki.php?n=Site.Nmonchart
+General Public License v3
+
+Nmon
+http://nmon.sourceforge.net/
+General Public License v3
+
+Cyclictest tool
+https://git.kernel.org/pub/scm/utils/rt-tests/rt-tests.git/
+General Public License v2
+
+
+Latency tool
+https://xenomai.org/
+GNU Lesser General Public License v2.1
+
+libmodbus
+https://libmodbus.org/
+GNU Lesser General Public License v2.1
+
+
+

@@ -1,0 +1,138 @@
+From f6c747f52e1af3be175c41df33dcdf5f25316ccd Mon Sep 17 00:00:00 2001
+
+Date: Fri, 1 Nov 2019 07:20:12 -0400
+Subject: [PATCH] capture jitter performance in share memory
+
+---
+ testsuite/latency/latency.c | 86 ++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 85 insertions(+), 1 deletion(-)
+
+diff --git a/testsuite/latency/latency.c b/testsuite/latency/latency.c
+index 5304342..f8b78e1 100644
+--- a/testsuite/latency/latency.c
++++ b/testsuite/latency/latency.c
+@@ -39,6 +39,17 @@
+ #include <rtdm/testing.h>
+ #include <boilerplate/trace.h>
+ #include <xenomai/init.h>
++#include <sys/ipc.h>
++#include <sys/shm.h>
++
++/*share memory*/
++#define MOTOR_STATUS_ADDRESS    0x0400
++#define BUF_READ_SIZE           0x0C00
++static int do_sharemem = 0;
++static void *shm_addr = NULL;
++static int shmid = -1;
++static const key_t shm_key = 87654321;
++static const int shm_size = 4096;
+ 
+ pthread_t latency_task, display_task;
+ 
+@@ -90,6 +101,67 @@ char *do_gnuplot = NULL;
+ int do_histogram = 0, do_stats = 0, finished = 0;
+ int bucketsize = 1000;		/* default = 1000ns, -B <size> to override */
+ 
++/*Share memory API */
++static int sharemem_init_entry(void)
++{
++    shmid = shmget(shm_key, shm_size, 0666|IPC_CREAT);
++    printf("shmid : %u\n", shmid);
++    if (shmid == -1){
++        printf("shmget error! \n");
++        return -1;
++    }
++
++    shm_addr = shmat(shmid, NULL, 0);
++    if (shm_addr == (void *) -1){
++        printf("shmat error! \n");
++        return -1;
++    }
++    return 0;
++}
++
++static void write_buf_int32(char* dest,int32_t src)
++{
++		dest[3] = (char)(src>>8);
++		dest[2] = (char)(src);
++		dest[1] = (char)(src>>24);
++		dest[0] = (char)(src>>16);
++
++}
++
++static void write_buf_int64(char* dest,int64_t src)
++{
++		dest[7] = (char)(src>>8);
++		dest[6] = (char)(src);
++		dest[5] = (char)(src>>24);
++		dest[4] = (char)(src>>16);
++		dest[3] = (char)(src>>40);
++		dest[2] = (char)(src>>32);
++		dest[1] = (char)(src>>56);
++		dest[0] = (char)(src>>48);
++}
++
++static void update_RT_sharemem(unsigned long cur_jitter,unsigned long best_jitter,unsigned long wrose_jitter)
++{
++		char mem_buffer[BUF_READ_SIZE];
++		memset (mem_buffer,0,BUF_READ_SIZE);
++		write_buf_int64(mem_buffer,0);
++		write_buf_int64(mem_buffer+8,0);
++		write_buf_int64(mem_buffer+16,cur_jitter);
++		write_buf_int32(mem_buffer+24,0);
++		write_buf_int32(mem_buffer+28,0);
++		write_buf_int32(mem_buffer+32,0);
++		write_buf_int64(mem_buffer+36,0);
++		write_buf_int64(mem_buffer+44,0);
++		write_buf_int64(mem_buffer+52,best_jitter);
++		write_buf_int64(mem_buffer+60,wrose_jitter);
++		write_buf_int32(mem_buffer+68,0);
++		write_buf_int32(mem_buffer+72,0);
++		write_buf_int64(mem_buffer+76,0);
++		write_buf_int64(mem_buffer+84,0);
++		write_buf_int64(mem_buffer+92,0);
++		memcpy((pthread_mutex_t *)shm_addr, mem_buffer, BUF_READ_SIZE);
++}
++
+ #define need_histo() (do_histogram || do_stats || do_gnuplot)
+ 
+ static inline void add_histogram(int32_t *histogram, int32_t addval)
+@@ -317,6 +389,9 @@ static void *display(void *cookie)
+ 			goverrun = result.overall.overruns;
+ 		}
+ 
++		if(do_sharemem)
++			update_RT_sharemem((unsigned long)maxj,(unsigned long)gminj,(unsigned long)gmaxj);
++
+ 		if (!quiet) {
+ 			if (data_lines && (n++ % data_lines) == 0) {
+ 				time_t now, dt;
+@@ -598,6 +673,7 @@ void application_usage(void)
+         fprintf(stderr, "usage: %s [options]:\n", get_program_name());
+ 	fprintf(stderr,
+ 		"-h                              print histograms of min, avg, max latencies\n"
++		"-r                              update jitter performance in share memory\n"
+ 		"-g <file>                       dump histogram to <file> in gnuplot format\n"
+ 		"-s                              print statistics of min, avg, max latencies\n"
+ 		"-H <histogram-size>             default = 200, increase if your last bucket is full\n"
+@@ -646,8 +722,16 @@ int main(int argc, char *const *argv)
+ 	cpu_set_t cpus;
+ 	sigset_t mask;
+ 
+-	while ((c = getopt(argc, argv, "g:hp:l:T:qH:B:sD:t:fc:P:b")) != EOF)
++	while ((c = getopt(argc, argv, "g:hrp:l:T:qH:B:sD:t:fc:P:b")) != EOF)
+ 		switch (c) {
++		case 'r':
++			do_sharemem = 1;
++			if(sharemem_init_entry() == -1)
++			{
++				printf("share memory error ! \n");
++				exit(-1);
++			}
++			break;
+ 		case 'g':
+ 			do_gnuplot = strdup(optarg);
+ 			break;
+-- 
+2.7.4
+

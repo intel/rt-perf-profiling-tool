@@ -1,0 +1,253 @@
+From 3ee8f256a21e863efba320432a8ba6b3f965c973 Mon Sep 17 00:00:00 2001
+
+Date: Fri, 1 Nov 2019 07:46:49 -0400
+Subject: [PATCH] capture latency in share memory
+
+---
+ src/cyclictest/cyclictest.c | 148 ++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 144 insertions(+), 4 deletions(-)
+
+diff --git a/src/cyclictest/cyclictest.c b/src/cyclictest/cyclictest.c
+index 3f1bef1..7e3734f 100644
+--- a/src/cyclictest/cyclictest.c
++++ b/src/cyclictest/cyclictest.c
+@@ -36,6 +36,8 @@
+ #include <sys/utsname.h>
+ #include <sys/mman.h>
+ #include <sys/syscall.h>
++#include <sys/ipc.h>
++#include <sys/shm.h>
+ #include "rt_numa.h"
+ 
+ #include "rt-utils.h"
+@@ -266,6 +268,119 @@ static void print_stat(FILE *fp, struct thread_param *par, int index, int verbos
+ static int latency_target_fd = -1;
+ static int32_t latency_target_value = 0;
+ 
++/*share memory*/
++#define MOTOR_STATUS_ADDRESS    0x0400
++#define BUF_READ_SIZE           0x0C00
++static int do_sharemem = 0;
++static void *shm_addr = NULL;
++static int shmid = -1;
++static const key_t shm_key = 87654321;
++static const int shm_size = 4096;
++
++/*Share memory API */
++static int sharemem_init_entry(void)
++{
++	shmid = shmget(shm_key, shm_size, 0666|IPC_CREAT);
++	printf("shmid : %u\n", shmid);
++	if (shmid == -1){
++		printf("shmget error! \n");
++		return -1;
++	}
++	shm_addr = shmat(shmid, NULL, 0);
++	if (shm_addr == (void *) -1){
++		printf("shmat error! \n");
++		return -1;
++	}
++	return 0;
++}
++
++static void sharemem_exit_entry(void)
++{
++    shmdt(shm_addr);
++}
++
++static void write_buf_int32(char* dest,int32_t src)
++{
++	dest[3] = (char)(src>>8);
++	dest[2] = (char)(src);
++	dest[1] = (char)(src>>24);
++	dest[0] = (char)(src>>16);
++}
++
++static void write_buf_int64(char* dest,int64_t src)
++{
++	dest[7] = (char)(src>>8);
++	dest[6] = (char)(src);
++	dest[5] = (char)(src>>24);
++	dest[4] = (char)(src>>16);
++	dest[3] = (char)(src>>40);
++	dest[2] = (char)(src>>32);
++	dest[1] = (char)(src>>56);
++	dest[0] = (char)(src>>48);
++}
++
++static void update_RT_sharemem(unsigned long cur_jitter,unsigned long best_jitter,unsigned long wrose_jitter)
++{
++	char mem_buffer[BUF_READ_SIZE];
++	memset (mem_buffer,0,BUF_READ_SIZE);
++	write_buf_int64(mem_buffer,0);
++	write_buf_int64(mem_buffer+8,0);
++	write_buf_int64(mem_buffer+16,cur_jitter);
++	write_buf_int32(mem_buffer+24,0);
++	write_buf_int32(mem_buffer+28,0);
++	write_buf_int32(mem_buffer+32,0);
++	write_buf_int64(mem_buffer+36,0);
++	write_buf_int64(mem_buffer+44,0);
++	write_buf_int64(mem_buffer+52,best_jitter);
++	write_buf_int64(mem_buffer+60,wrose_jitter);
++	write_buf_int32(mem_buffer+68,0);
++	write_buf_int32(mem_buffer+72,0);
++	write_buf_int64(mem_buffer+76,0);
++	write_buf_int64(mem_buffer+84,0);
++	write_buf_int64(mem_buffer+92,0);
++	memcpy((pthread_mutex_t *)shm_addr, mem_buffer, BUF_READ_SIZE);
++}
++
++typedef enum {
++	ANALYSIS_MAX = 1,
++	ANALYSIS_MIN,
++	ANALYSIS_ARG
++}analysis_t;
++
++static long Get_Analysis_Data(long* data,int len,analysis_t type)
++{
++	int i,j,ischange=1;
++	long temp=0,result=0;
++	switch (type)
++	{
++		case ANALYSIS_MAX:
++		case ANALYSIS_MIN:
++			for(i=0;(i<len)&&ischange;i++){
++				ischange = 0;
++				for(j=len-1;j>i;j--){
++					if(data[j-1] > data[j]){
++						temp = data[j];
++						data[j] = data[j-1];
++						data[j-1] = temp;
++						ischange = 1;
++					}
++				}
++			}
++		break;
++		case ANALYSIS_ARG:
++			for(i=0;i<len;i++)
++				result += data[i];
++			result = result / len;
++		break;
++	}
++	if(type == ANALYSIS_MIN)
++		return data[0];
++	if(type == ANALYSIS_MAX)
++		return data[len-1];
++	else
++		return result;
++}
++
+ /* Latency trick
+  * if the file /dev/cpu_dma_latency exists,
+  * open it and write a zero into it. This will tell
+@@ -1089,7 +1204,7 @@ static void *timerthread(void *param)
+ 
+ 	while (!shutdown) {
+ 
+-		uint64_t diff;
++		int64_t diff;
+ 		unsigned long diff_smi = 0;
+ 		int sigs, ret;
+ 
+@@ -1304,6 +1419,7 @@ static void display_help(int error)
+ 	       "-D       --duration=TIME   specify a length for the test run.\n"
+ 	       "                           Append 'm', 'h', or 'd' to specify minutes, hours or days.\n"
+ 	       "	 --latency=PM_QOS  write PM_QOS to /dev/cpu_dma_latency\n"
++	       "-e       --share memory    update latency in share memory\n"
+ 	       "-E       --event           event tracing (used with -b)\n"
+ 	       "-f       --ftrace          function trace (when -b is active)\n"
+ 	       "-F       --fifo=<path>     create a named pipe at path and write stats to it\n"
+@@ -1484,7 +1600,7 @@ static char *policyname(int policy)
+ 
+ enum option_values {
+ 	OPT_AFFINITY=1, OPT_NOTRACE, OPT_BREAKTRACE, OPT_PREEMPTIRQ, OPT_CLOCK,
+-	OPT_CONTEXT, OPT_DISTANCE, OPT_DURATION, OPT_LATENCY, OPT_EVENT,
++	OPT_CONTEXT, OPT_DISTANCE, OPT_DURATION, OPT_LATENCY, OPT_EVENT, OPT_SHAREMEM,
+ 	OPT_FTRACE, OPT_FIFO, OPT_HISTOGRAM, OPT_HISTOFALL, OPT_HISTFILE,
+ 	OPT_INTERVAL, OPT_IRQSOFF, OPT_LOOPS, OPT_MLOCKALL, OPT_REFRESH,
+ 	OPT_NANOSLEEP, OPT_NSECS, OPT_OSCOPE, OPT_TRACEOPT, OPT_PRIORITY,
+@@ -1519,6 +1635,7 @@ static void process_options (int argc, char *argv[], int max_cpus)
+ 			{"duration",         required_argument, NULL, OPT_DURATION },
+ 			{"latency",          required_argument, NULL, OPT_LATENCY },
+ 			{"event",            no_argument,       NULL, OPT_EVENT },
++			{"sharemem",         no_argument,       NULL, OPT_SHAREMEM },
+ 			{"ftrace",           no_argument,       NULL, OPT_FTRACE },
+ 			{"fifo",             required_argument, NULL, OPT_FIFO },
+ 			{"histogram",        required_argument, NULL, OPT_HISTOGRAM },
+@@ -1559,7 +1676,7 @@ static void process_options (int argc, char *argv[], int max_cpus)
+ 			{"help",             no_argument,       NULL, OPT_HELP },
+ 			{NULL, 0, NULL, 0}
+ 		};
+-		int c = getopt_long(argc, argv, "a::A::b:Bc:Cd:D:Efh:H:i:Il:MnNo:O:p:PmqrRsSt::uUvD:wWT:",
++		int c = getopt_long(argc, argv, "a::A::b:Bc:Cd:D:eEfh:H:i:Il:MnNo:O:p:PmqrRsSt::uUvD:wWT:",
+ 				    long_options, &option_index);
+ 		if (c == -1)
+ 			break;
+@@ -1607,6 +1724,10 @@ static void process_options (int argc, char *argv[], int max_cpus)
+ 		case 'D':
+ 		case OPT_DURATION:
+ 			duration = parse_time_string(optarg); break;
++		case 'e':
++		case OPT_SHAREMEM:
++			do_sharemem = 1;
++			break;
+ 		case 'E':
+ 		case OPT_EVENT:
+ 			enable_events = 1; break;
+@@ -1937,6 +2058,8 @@ static void sighand(int sig)
+ 		return;
+ 	}
+ 	shutdown = 1;
++	if(do_sharemem)
++		sharemem_exit_entry();
+ 	if (refresh_on_max)
+ 		pthread_cond_signal(&refresh_on_max_cond);
+ 	if (tracelimit)
+@@ -2339,6 +2462,9 @@ int main(int argc, char **argv)
+ 	signal(SIGTERM, sighand);
+ 	signal(SIGUSR1, sighand);
+ 
++	if(do_sharemem)
++		sharemem_init_entry();
++
+ 	parameters = calloc(num_threads, sizeof(struct thread_param *));
+ 	if (!parameters)
+ 		goto out;
+@@ -2477,6 +2603,10 @@ int main(int argc, char **argv)
+ 		static char *policystr = NULL;
+ 		static char *slash = NULL;
+ 		static char *policystr2;
++		long sharemem_min,sharemem_max,sharemem_act;
++		long sharemem_min_array[256];
++		long sharemem_max_array[256];
++		long sharemem_act_array[256];
+ 
+ 		if (!policystr)
+ 			policystr = policyname(policy);
+@@ -2498,12 +2628,22 @@ int main(int argc, char **argv)
+ 		}
+ 
+ 		for (i = 0; i < num_threads; i++) {
+-
++			if(do_sharemem){
++				sharemem_min_array[i] = parameters[i]->stats->min;
++				sharemem_max_array[i] = parameters[i]->stats->max;
++				sharemem_act_array[i] = parameters[i]->stats->act;
++			}
+ 			print_stat(stdout, parameters[i], i, verbose, quiet);
+ 			if(max_cycles && statistics[i]->cycles >= max_cycles)
+ 				allstopped++;
+ 		}
+ 
++		if(do_sharemem){
++			sharemem_min = Get_Analysis_Data(sharemem_min_array,num_threads,ANALYSIS_MIN);
++			sharemem_max = Get_Analysis_Data(sharemem_max_array,num_threads,ANALYSIS_MAX);
++			sharemem_act = Get_Analysis_Data(sharemem_act_array,num_threads,ANALYSIS_ARG);
++			update_RT_sharemem(sharemem_act,sharemem_min,sharemem_max);
++		}
+ 		usleep(10000);
+ 		if (shutdown || allstopped)
+ 			break;
+-- 
+2.7.4
+
