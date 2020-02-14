@@ -10,8 +10,9 @@
   * [2.1 Setup environment](#2.1)
     * [2.1.1 Install software dependencies](#2.1.1)
     * [2.1.2 Get the source code](#2.1.2)
-    * [2.1.3 Build latency/cyclictest utilities](#2.1.3)
-    * [2.1.4 Make nmon/nmonchart executable](#2.1.4)
+    * [2.1.3 Build latency utilities](#2.1.3)
+    * [2.1.4 Build cyclictest utilities](#2.1.4)
+    * [2.1.5 Make nmon/nmonchart executable](#2.1.5)
   * [2.2 Generate RT performance data](#2.2)
     * [2.2.1 Generate Jitter/Cycle data with latency](#2.2.1)
     * [2.2.2 Generate Jitter/Cycle data with cyclictest](#2.2.2)
@@ -63,7 +64,7 @@ Please install *gcc*, *make*, *git* utilities and *ncurses* dev lib on the targe
 3. Type following instruction in the terminal, input root password as prompt. Please adjust the command accordingly to install the corresponding dependency if you use Fedora or other Linux distributions.
 
 ```Shell
-sudo apt install gcc libncurses5-dev make git
+sudo apt install gcc libncurses5-dev make git build-essential kernel-package fakeroot libssl-dev
 ```
 
 ### <a name="2.1.2"/>2.1.2 Get the source code
@@ -76,24 +77,36 @@ Get the latest source code of RT-Profiling tool from the git server or from pack
 git clone https://github.com/intel/rt-perf-profiling-tool
 ```
 
-### <a name="2.1.3"/>2.1.3 Build latency/cyclictest utilities
+### <a name="2.1.3"/>2.1.3 Build latency utilities
 
-Type following commands in the terminal to build **latency** and **cyclictest** utilities.
+Type following commands in the terminal to build **latency** utilities.
 
-1. Apply the patch. Where *xxx* stands for the absolute path of patch **0001-capture-jitter-performance-in-share-memory.patch** under *collection/latency* folder you got at step 2.
+1. Get xenomai source code.
 
 ```Shell
-cd testsuite/latency/
+wget https://xenomai.org/downloads/xenomai/stable/xenomai-3.0.7.tar.bz2
+tar -jxvf xenomai-3.0.7.tar.bz2
+```
+
+2. Apply the patch for latency utility. Where *xxx* stands for the absolute path of patch **0001-capture-jitter-performance-in-share-memory.patch** under *collection/latency* folder you got at step 2.1.2.
+
+```Shell
+cd xenomai-3.0.7/
 git apply --reject xxx
 ```
 
-2. Build **latency** utility.
+3. Build **latency** utility.
 
 ```Shell
+./configure --with-core=cobalt --enable-smp --enable-pshared
 make
 ```
 
-3. Get rt-tests source code v1.0.
+### <a name="2.1.4"/>2.1.4 Build cyclictest utilities
+
+Type following commands in the terminal to build **cyclictest** utilities.
+
+1. Get rt-tests source code v1.0.
 
 ```Shell
 git clone https://git.kernel.org/pub/scm/utils/rt-tests/rt-tests.git
@@ -101,18 +114,18 @@ cd rt-tests/
 git checkout stable/v1.0
 ```
 
-4. Apply the patch. Where *yyy* stands for the absolute path of patch **0001-capture-latency-in-share-memory.patch** under collection/cyclictest folder you got at step 2.
+2. Apply the patch for cyclictest utility. Where *yyy* stands for the absolute path of patch **0001-capture-latency-in-share-memory.patch** under collection/cyclictest folder you got at step 2.1.2.
 
 ```Shell
 git apply --reject yyy
 ```
 
-5. Build **cyclictest** utility.
+6. Build **cyclictest** utility.
 ```Shell
 make
 ```
 
-### <a name="2.1.4"/>2.1.4 Make nmon/nmonchart executable
+### <a name="2.1.5"/>2.1.5 Make nmon/nmonchart executable
 
 Build **nmon** utility, and then make **nmon** utility and **nmonchart** script executable at any place.
 
@@ -153,6 +166,12 @@ sudo ./latency -r
 ```
 
 > ***-r***: update jitter performance in share memory
+
+Notes: If you met following error message:
+
+  *0"000.000| BUG in low_init(): [main] Cobalt core not enabled in kernel*
+
+It means that the cobalt core of xenomai is not enabled in the linux kernel. Please build the xenomai enabled kernel and utilize it as the system kernel.  
 
 ### <a name="2.2.2"/>2.2.2 Generate Jitter/Cycle data with cyclictest
 
